@@ -1,29 +1,58 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy import Column, Integer, String, create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from passlib.context import CryptContext
+# main.py
 
-# Configuração do banco
-DATABASE_URL = "sqlite:///./users.db"
+import bcrypt
+from typing import Annotated  # <--- ADICIONADO para a validação
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+# 'constr' foi trocado por 'Field'
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.orm import sessionmaker, Session, declarative_base  # <--- CORRIGIDO o import
+
+# --- 1. Configuração do Banco de Dados (SQLite) ---
+DATABASE_URL = "sqlite:///./ifome_clone.db"
+
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Configuração de senha
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# Modelo User
+# --- 2. Modelo de Dados (Tabela de Usuários) ---
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
-    password = Column(String)
 
+    id = Column(Integer, primary_key=True, index=True)
+    nome_completo = Column(String, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+
+# Cria a tabela no banco de dados, se não existir
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+# --- 3. Schemas (Validação de Dados com Pydantic) ---
+# Schema para criação de usuário (o que a API recebe)
+class UserCreate(BaseModel):
+    nome_completo: str
+    email: EmailStr
+    # <--- CORRIGIDO: Validação da senha usando Annotated e Field
+    senha: Annotated[str, Field(min_length=6)]
 
-# Dependência para sessão
+# Schema para exibir o usuário (o que a API retorna, sem a senha)
+class UserResponse(BaseModel):
+    id: int
+    nome_completo: str
+    email: EmailStr
+
+    class Config:
+        orm_mode = True
+
+# --- 4. Funções de Segurança (Hashing de Senha) ---
+def get_password_hash(password: str) -> str:
+    """Cria o hash de uma senha."""
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed_password.decode('utf-8')
+
+# --- 5. Dependência do Banco de Dados ---
 def get_db():
     db = SessionLocal()
     try:
@@ -31,54 +60,84 @@ def get_db():
     finally:
         db.close()
 
-# Funções auxiliares
-def hash_password(password: str):
-    return pwd_context.hash(password)
+# --- 6. Inicialização do FastAPI ---
+app = FastAPI(
+    title="API iFome Clone",
+    description="API para o CRUD de usuários.",
+    version="1.0.0"
+)
 
-def verify_password(password: str, hashed: str):
-    return pwd_context.verify(password, hashed)
+# Configuração do CORS para permitir que o frontend acesse a API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ------------------------
-# ROTAS CRUD DO USUÁRIO
-# ------------------------
+# --- 7. Endpoints da API (Rotas) ---
 
-# CREATE (Cadastrar usuário)
-@app.post("/register")
-def register(email: str, password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
-    if user:
-        raise HTTPException(status_code=400, detail="Email já cadastrado")
-    hashed_pw = hash_password(password)
-    new_user = User(email=email, password=hashed_pw)
+# CREATE - Rota para criar um novo usuário
+@app.post("/users/", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["Users"])
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Este e-mail já está em uso."
+        )
+    
+    hashed_password = get_password_hash(user.senha)
+    new_user = User(
+        nome_completo=user.nome_completo,
+        email=user.email,
+        hashed_password=hashed_password
+    )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return {"msg": "Usuário cadastrado com sucesso", "user_id": new_user.id}
+    return new_user
 
-# READ (Login)
-@app.post("/login")
-def login(email: str, password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
-    if not user or not verify_password(password, user.password):
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
-    return {"msg": "Login realizado com sucesso", "user_id": user.id}
+# READ - Rota para obter uma lista de todos os usuários
+@app.get("/users/", response_model=list[UserResponse], tags=["Users"])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    users = db.query(User).offset(skip).limit(limit).all()
+    return users
 
-# UPDATE (Atualizar senha)
-@app.put("/update-password")
-def update_password(email: str, new_password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
+# READ - Rota para obter um usuário específico pelo ID
+@app.get("/users/{user_id}", response_model=UserResponse, tags=["Users"])
+def read_user(user_id: int, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if db_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuário não encontrado."
+        )
+    return db_user
+
+# UPDATE - Rota para atualizar os dados de um usuário
+@app.put("/users/{user_id}", response_model=UserResponse, tags=["Users"])
+def update_user(user_id: int, user_update: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if db_user is None:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
-    user.password = hash_password(new_password)
-    db.commit()
-    return {"msg": "Senha atualizada com sucesso"}
 
-# DELETE (Excluir conta)
-@app.delete("/delete-user")
-def delete_user(email: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuário não encontrado")
-    db.delete(user)
+    db_user.nome_completo = user_update.nome_completo
+    db_user.email = user_update.email
+    db_user.hashed_password = get_password_hash(user_update.senha)
+    
     db.commit()
-    return {"msg": "Usuário excluído com sucesso"}
+    db.refresh(db_user)
+    return db_user
+
+# DELETE - Rota para deletar um usuário
+@app.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Users"])
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    
+    db.delete(db_user)
+    db.commit()
+    return {"ok": True}
