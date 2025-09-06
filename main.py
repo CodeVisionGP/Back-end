@@ -1,11 +1,11 @@
 import bcrypt
-from typing import Annotated  # <--- ADICIONADO para a validação
+from typing import Annotated 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-# 'constr' foi trocado por 'Field'
+
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.orm import sessionmaker, Session, declarative_base  # <--- CORRIGIDO o import
+from sqlalchemy.orm import sessionmaker, Session, declarative_base 
 
 
 DATABASE_URL = "sqlite:///./ifome_clone.db"
