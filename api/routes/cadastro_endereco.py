@@ -1,40 +1,55 @@
-import uuid
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field, field_validator
+import re
 
+# Cria o router com prefixo e tag
 router = APIRouter(
-    prefix="/api/enderecos",
-    tags=["Cadastro de Endereço"]
+    prefix="/api/endereco",
+    tags=["Endereço"]
 )
 
-# Schemas
-class EnderecoSchema(BaseModel):
-    cep: str
+# Simula um "banco de dados" na memória
+usuarios = {}
+
+
+# Modelo de dados (entrada e validação)
+class Endereco(BaseModel):
     rua: str
     numero: str
-    complemento: Optional[str] = None
     bairro: str
     cidade: str
-    estado: str
+    estado: str = Field(..., description="Apenas SP é permitido")
+    cep: str
+    complemento: str | None = None
+    referencia: str | None = None
 
-class EnderecoDB(EnderecoSchema):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    @field_validator("estado")
+    def validar_estado(cls, v):
+        if v.upper() != "SP":
+            raise ValueError("Apenas endereços do estado de São Paulo (SP) são permitidos.")
+        return v.upper()
 
-# Banco de dados em memória
-db_in_memory: List[EnderecoDB] = []
+    @field_validator("cep")
+    def validar_cep(cls, v):
+        if not re.match(r"^\d{5}-?\d{3}$", v):
+            raise ValueError("CEP inválido! Use o formato 00000-000.")
+        v = v.replace("-", "")
+        return f"{v[:5]}-{v[5:]}"
 
-# Rotas
-@router.post("/", response_model=EnderecoDB, status_code=status.HTTP_201_CREATED)
-async def criar_endereco(endereco: EnderecoSchema):
-    print(f"Recebido novo endereço: {endereco.dict()}")
+
+@router.post("/{user_id}", status_code=201)
+def cadastrar_endereco(user_id: int, endereco: Endereco):
+    """Cadastra um endereço novo para o usuário."""
+    if user_id in usuarios:
+        raise HTTPException(status_code=409, detail="Usuário já possui endereço cadastrado.")
     
-    novo_endereco = EnderecoDB(**endereco.dict())
-    db_in_memory.append(novo_endereco)
-    
-    print(f"Endereço salvo com sucesso! ID: {novo_endereco.id}")
-    return novo_endereco
+    usuarios[user_id] = endereco.model_dump()
+    return {"mensagem": "Endereço cadastrado com sucesso!", "endereco": usuarios[user_id]}
 
-@router.get("/", response_model=List[EnderecoDB])
-async def listar_enderecos():
-    return db_in_memory
+
+@router.get("/{user_id}")
+def consultar_endereco(user_id: int):
+    """Retorna o endereço do usuário, se existir."""
+    if user_id not in usuarios:
+        raise HTTPException(status_code=404, detail="Usuário ainda não possui endereço cadastrado.")
+    return {"user_id": user_id, "endereco": usuarios[user_id]}
