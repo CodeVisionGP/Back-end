@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import cadastro_endereco, consulta_items, cadastro_usuario, cadastro_sacola
+from api.routes import cadastro_endereco, cadastro_usuario, cadastro_sacola, consulta_items
 
 app = FastAPI(title="Backend Integrado")
 
