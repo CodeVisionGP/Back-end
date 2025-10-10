@@ -11,9 +11,10 @@ router = APIRouter(
 )
 
 # Banco de dados
-DATABASE_URL = "sqlite:///./ifome_clone.db"
+DATABASE_URL = "postgresql+psycopg2://postgres:senha@localhost:5432/ifome"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

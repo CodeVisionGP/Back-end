@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import cadastro_endereco, consulta_items, cadastro_usuario
+from api.routes import cadastro_endereco, consulta_items, cadastro_usuario, cadastro_sacola
 
 app = FastAPI(title="Backend Integrado")
 
@@ -21,6 +21,7 @@ app.add_middleware(
 app.include_router(cadastro_endereco.router)
 app.include_router(consulta_items.router)
 app.include_router(cadastro_usuario.router)
+app.include_router(cadastro_sacola.router)
 
 @app.get("/")
 async def root():
