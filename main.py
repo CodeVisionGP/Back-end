@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import cadastro_endereco, cadastro_usuario, cadastro_sacola, consulta_items
+from api.routes import cadastro_endereco, cadastro_usuario, cadastro_sacola, consulta_items, login
 
 app = FastAPI(title="Backend Integrado")
 
@@ -8,6 +8,7 @@ app = FastAPI(title="Backend Integrado")
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
+    "http://127.0.0.1:3000"
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -22,6 +23,7 @@ app.include_router(cadastro_endereco.router)
 app.include_router(consulta_items.router)
 app.include_router(cadastro_usuario.router)
 app.include_router(cadastro_sacola.router)
+app.include_router(login.router)
 
 @app.get("/")
 async def root():

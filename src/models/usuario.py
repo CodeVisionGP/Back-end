@@ -1,10 +1,11 @@
 from sqlalchemy import Column, Integer, String
-from src.database import Base  # importa do seu arquivo database.py
+from src.database import Base # Importa o Base do seu arquivo database.py
 
 class User(Base):
-    __tablename__ = "usuarios"
+    __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
-    nome_completo = Column(String, nullable=False)
+    nome_completo = Column(String, index=True)
     email = Column(String, unique=True, index=True, nullable=False)
-    senha_hash = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=False)
+   

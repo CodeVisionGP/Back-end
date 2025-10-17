@@ -1,35 +1,18 @@
-import bcrypt
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import create_engine, Column, Integer, String
-from sqlalchemy.orm import sessionmaker, Session, declarative_base
+from sqlalchemy.orm import Session
 
-router = APIRouter(
-    prefix="/api/usuario",
-    tags=["Usuário"]
-)
+# --- NOVOS IMPORTS ---
+from src.database import get_db, engine, Base
+from src.models.usuario import User
+from src.security import get_password_hash
+# ---------------------
 
-# Banco de dados
-DATABASE_URL = "postgresql+psycopg2://postgres:senha@localhost:5432/ifome"
-
-engine = create_engine(DATABASE_URL)
-
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# Modelo SQLAlchemy
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    nome_completo = Column(String, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    hashed_password = Column(String, nullable=False)
-
+# Cria as tabelas no banco de dados (usando o Base e engine importados)
 Base.metadata.create_all(bind=engine)
 
-# Schemas Pydantic
+# --- Schemas Pydantic (permanecem aqui) ---
 class UserCreate(BaseModel):
     nome_completo: str
     email: EmailStr
@@ -43,29 +26,26 @@ class UserResponse(BaseModel):
     class Config:
         orm_mode = True
 
-# Funções utilitárias
-def get_password_hash(password: str) -> str:
-    salt = bcrypt.gensalt()
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed_password.decode('utf-8')
+# --- API Router (permanece aqui) ---
+router = APIRouter(
+    prefix="/api/usuario",
+    tags=["Usuário"]
+)
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Rotas
+# --- API Routes (permanecem aqui) ---
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    """Creates a new user in the database."""
     db_user = db.query(User).filter(User.email == user.email).first()
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Este e-mail já está em uso."
         )
-    hashed_password = get_password_hash(user.senha)
+    
+    # Usa a função de hash importada
+    hashed_password = get_password_hash(user.senha) 
+    
     new_user = User(
         nome_completo=user.nome_completo,
         email=user.email,
@@ -93,9 +73,11 @@ def update_user(user_id: int, user_update: UserCreate, db: Session = Depends(get
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    
     db_user.nome_completo = user_update.nome_completo
     db_user.email = user_update.email
-    db_user.hashed_password = get_password_hash(user_update.senha)
+    db_user.hashed_password = get_password_hash(user_update.senha) # Usa a função de hash importada
+    
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -105,6 +87,7 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuário não encontrado")
+    
     db.delete(db_user)
     db.commit()
     return {"ok": True}
