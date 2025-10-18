@@ -1,0 +1,15 @@
+#Pinning versions for maximum stability
+fastapi==0.111.0
+starlette==0.37.2
+uvicorn[standard]==0.29.0
+
+#Other application dependencies
+sqlalchemy
+python-dotenv
+authlib
+requests
+psycopg2-binary
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+itsdangerous  # <-- ADICIONE ESTA LINHA

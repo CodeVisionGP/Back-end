@@ -1,0 +1,13 @@
+services:
+  backend:
+    # Constrói a imagem a partir do Dockerfile na pasta atual
+    build: .
+    # Mapeia a porta 8000 do seu computador para a porta 8000 do contentor
+    ports:
+      - "8000:8000"
+    # Monta a sua pasta de projeto dentro do contentor.
+    # Isto significa que qualquer alteração que fizer no seu código
+    # será refletida automaticamente, sem precisar de reiniciar nada.
+    volumes:
+      - .:/app
+
