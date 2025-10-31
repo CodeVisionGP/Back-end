@@ -5,36 +5,28 @@ import requests
 from typing import Optional, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, Integer, String, Float
 from sqlalchemy.orm import Session
 
 # Importar dependências do Firebase Admin
-from firebase_admin import credentials, initialize_app, firestore, _apps # Inclui _apps
+from firebase_admin import credentials, initialize_app, firestore, _apps
 
-# Importações de módulos locais (Ajuste o caminho se necessário)
-# Assumindo que 'src.database' está no mesmo nível de 'api'
-from src.database import Base, SessionLocal 
+# --- Nossas Importações Locais Corrigidas ---
+from src.database import get_db
+from src.models.endereco import Endereco  # <-- IMPORTA O MODELO
+from src import schemas                     # <-- IMPORTA OS SCHEMAS
 
 
 # --- Variáveis de Ambiente ---
-# CORRIGIDO: Agora usa a chave de API correta para Geocodificação (AIzaSy...)
 GOOGLE_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY") 
-# O ID do aplicativo para uso no Firestore (regra de segurança)
 APP_ID = os.getenv("__APP_ID", "default-app-id")
-# Caminho opcional para o arquivo de credenciais JSON do Service Account
 FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
 
-# --- Inicialização Condicional do Firebase Admin (Refatorada) ---
+# --- Inicialização Condicional do Firebase Admin ---
+# (Mantida aqui, mas idealmente deveria estar no main.py)
 db_firestore = None
-
-# A inicialização é feita APENAS se nenhum app do Firebase existir
 if not _apps:
-    
     initialized_successfully = False
-    
-    # Tentativa de inicialização com Service Account JSON
     service_account_path = None
     if FIREBASE_CREDENTIALS_PATH:
         service_account_path = os.path.abspath(FIREBASE_CREDENTIALS_PATH.strip('"')) 
@@ -45,24 +37,18 @@ if not _apps:
             initialize_app(cred)
             initialized_successfully = True
         except Exception:
-            # Falha silenciosa em caso de JSON inválido ou erro de leitura
             pass
-        
-    # Tentativa de inicialização com Application Default Credentials (ADC), se a anterior falhou
+            
     if not initialized_successfully:
         try:
             cred = credentials.ApplicationDefault() 
             initialize_app(cred)
         except Exception as e:
-            # O print é mantido fora do bloco try/except principal para evitar capturar erros de inicialização
             print(f"Aviso: Falha ao inicializar o Firebase Admin. Salvamento no Firestore desabilitado: {e}")
             
 try:
-    # Se o app foi inicializado com sucesso (em qualquer módulo ou neste), criamos o cliente.
-    # Se houver um erro de inicialização, db_firestore será None.
     db_firestore = firestore.client()
 except Exception:
-    # Captura caso o initialize_app tenha falhado em ambos os caminhos
     db_firestore = None
 
 
@@ -74,7 +60,6 @@ router = APIRouter(
 # --- FUNÇÃO DE GEOCODIFICAÇÃO AUTOMÁTICA ---
 def geocode_address(endereco_completo: str) -> Dict[str, float]:
     """Converte um endereço de texto em Lat/Lng usando o Google Geocoding API."""
-    # CORRIGIDO: Agora usa GOOGLE_PLACES_API_KEY
     if not GOOGLE_API_KEY:
         raise HTTPException(status_code=500, detail="Chave da Google Places API não configurada no servidor.")
         
@@ -101,74 +86,14 @@ def geocode_address(endereco_completo: str) -> Dict[str, float]:
         raise HTTPException(status_code=503, detail="Serviço de geocodificação indisponível.")
 
 
-# Modelo SQLAlchemy (Com Lat/Lng)
-class EnderecoModel(Base):
-    __tablename__ = "enderecos"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, nullable=False) # Deve ser compatível com o UID (String)
-    rua = Column(String, nullable=False)
-    numero = Column(String, nullable=False)
-    bairro = Column(String, nullable=False)
-    cidade = Column(String, nullable=False)
-    estado = Column(String, nullable=False)
-    cep = Column(String, nullable=False)
-    complemento = Column(String, nullable=True)
-    referencia = Column(String, nullable=True)
-    
-    latitude = Column(Float, nullable=False)
-    longitude = Column(Float, nullable=False)
-
-
-# Modelo de dados (entrada do usuário)
-class Endereco(BaseModel):
-    rua: str
-    numero: str
-    bairro: str
-    cidade: str
-    estado: str = Field(..., description="Apenas SP é permitido")
-    cep: str
-    complemento: Optional[str] = None
-    referencia: Optional[str] = None
-    
-    # Validação de estado
-    @field_validator("estado")
-    @classmethod
-    def validar_estado(cls, v):
-        if v.upper() != "SP":
-            raise ValueError("Apenas endereços do estado de São Paulo (SP) são permitidos.")
-        return v.upper()
-
-    # Validação de CEP
-    @field_validator("cep")
-    @classmethod
-    def validar_cep(cls, v):
-        if not re.match(r"^\d{5}-?\d{3}$", v):
-            raise ValueError("CEP inválido! Use o formato 00000-000.")
-        v = v.replace("-", "")
-        return f"{v[:5]}-{v[5:]}"
-
-
-# Dependência para sessão do banco
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-# Função auxiliar para salvar no Firestore
+# --- Função auxiliar para salvar no Firestore ---
 async def save_to_firestore(uid: str, data: Dict[str, Any]):
-    """Salva as coordenadas no Firestore, que é a fonte de dados primária do Front-end."""
+    """Salva as coordenadas no Firestore para o Front-end."""
     if not db_firestore:
         return 
     
     try:
-        # Caminho seguindo a regra de segurança de dados privados: 
-        # artifacts/{appId}/users/{userId}/user_settings/default_address
         doc_path = db_firestore.document(f"artifacts/{APP_ID}/users/{uid}/user_settings/default_address")
-        
-        # Salva o Lat e Lng que o Front-end de consulta espera
         doc_path.set({
             "lat": data['latitude'],
             "lng": data['longitude'],
@@ -180,7 +105,11 @@ async def save_to_firestore(uid: str, data: Dict[str, Any]):
 
 # --- ROTA PRINCIPAL: CADASTRO COM GEOCODIFICAÇÃO ---
 @router.post("/{user_id}", status_code=status.HTTP_201_CREATED)
-async def cadastrar_endereco(user_id: str, endereco: Endereco, db: Session = Depends(get_db)):
+async def cadastrar_endereco(
+    user_id: str, 
+    endereco: schemas.EnderecoCreate,  # <-- USA O SCHEMA DE ENTRADA
+    db: Session = Depends(get_db)
+):
     """Cadastra um endereço, geocodifica (preenche lat/lng automaticamente) e salva no DB/Firestore."""
     
     # 1. Monta o endereço completo para Geocodificação
@@ -198,7 +127,7 @@ async def cadastrar_endereco(user_id: str, endereco: Endereco, db: Session = Dep
         raise HTTPException(status_code=500, detail=f"Erro no serviço de geocodificação: {e}")
 
     # 3. Verifica se já existe (SQLAlchemy)
-    existente = db.query(EnderecoModel).filter(EnderecoModel.user_id == user_id).first()
+    existente = db.query(Endereco).filter(Endereco.user_id == user_id).first() # <-- USA O MODELO
     
     # 4. Cria o objeto de dados final
     endereco_data = endereco.model_dump()
@@ -214,7 +143,7 @@ async def cadastrar_endereco(user_id: str, endereco: Endereco, db: Session = Dep
         mensagem = "Endereço atualizado com sucesso!"
     else:
         # Cadastra novo endereço
-        novo_endereco = EnderecoModel(user_id=user_id, **endereco_data)
+        novo_endereco = Endereco(user_id=user_id, **endereco_data) # <-- USA O MODELO
         db.add(novo_endereco)
         db.commit()
         db.refresh(novo_endereco)
@@ -226,8 +155,6 @@ async def cadastrar_endereco(user_id: str, endereco: Endereco, db: Session = Dep
         "longitude": coordenadas['lng'],
         "rua": endereco.rua,
     }
-    # A verificação 'if not db_firestore' já está na função save_to_firestore, 
-    # então o código será executado apenas se o db estiver ativo.
     asyncio.create_task(save_to_firestore(user_id, firestore_data))
     
     return {
@@ -237,10 +164,15 @@ async def cadastrar_endereco(user_id: str, endereco: Endereco, db: Session = Dep
 
 
 # --- ROTA DE CONSULTA ---
-@router.get("/{user_id}")
+@router.get("/{user_id}", response_model=schemas.EnderecoResponse) # <-- USA O SCHEMA DE SAÍDA
 def consultar_endereco(user_id: str, db: Session = Depends(get_db)):
     """Consulta endereço de um usuário específico, retornando também lat/lng."""
-    endereco = db.query(EnderecoModel).filter(EnderecoModel.user_id == user_id).first()
-    if not endereco:
+    
+    # Busca no banco usando o MODELO
+    endereco_db = db.query(Endereco).filter(Endereco.user_id == user_id).first() 
+    
+    if not endereco_db:
         raise HTTPException(status_code=404, detail="Usuário ainda não possui endereço cadastrado.")
-    return endereco
+    
+    # Retorna o objeto do banco, que o FastAPI converterá para o SCHEMA de resposta
+    return endereco_db

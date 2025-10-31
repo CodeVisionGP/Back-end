@@ -1,8 +1,11 @@
 {
     // Usa uma variável do VS Code para garantir que o caminho está correto
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
-
+  
     // Garante que novos terminais ativem automaticamente o ambiente
-    "python.terminal.activateEnvironment": true
-}
-
+    "python.terminal.activateEnvironment": true,
+  
+    // 👇 ADICIONE ESTA LINHA 👇
+    // Diz ao Pylance para procurar pacotes a partir da pasta raiz (Back-end)
+    "python.analysis.extraPaths": ["."]
+  }
