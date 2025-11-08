@@ -1,0 +1,8 @@
+.env
+.vscode/
+node_modules/
+__pycache__/
+.venv/
+venv/
+*.db
+ifome_clone.db
