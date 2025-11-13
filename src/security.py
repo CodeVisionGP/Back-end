@@ -4,21 +4,18 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from starlette.config import Config
 
-# Importa o modelo de usuário para que possamos consultá-lo
-from src.models.usuario import User
+# --- CORREÇÃO DE IMPORT ---
+# Importa o modelo 'Usuario' (em português)
+from src.models.usuario import Usuario
 
 # --- Configurações de Segurança ---
-
-# Carrega as variáveis do .env (PRECISAMOS DA SECRET_KEY)
-# Certifique-se de que seu arquivo .env tem a linha:
-# SECRET_KEY=sua_chave_secreta_super_segura
 config = Config(".env")
 
-SECRET_KEY = config("SECRET_KEY")
+SECRET_KEY = config("SECRET_KEY", default="sua_chave_secreta_super_segura")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30  # O token expira em 30 minutos
 
-# --- Funções de Hash de Senha (As que você já tinha) ---
+# --- Funções de Hash de Senha (bcrypt) ---
 
 def get_password_hash(password: str) -> str:
     """Gera o hash de uma senha em texto plano."""
@@ -35,22 +32,20 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(password_bytes, hashed_password_bytes)
 
 
-# --- Função de Autenticação (A que faltava) ---
+# --- Função de Autenticação (Usada pelo Login) ---
 
-def autenticar_usuario(db: Session, email: str, senha: str) -> User | bool:
+def autenticar_usuario(db: Session, email: str, senha: str) -> Usuario | bool:
     """
     Verifica se um usuário existe e se a senha está correta.
-    (Esta é a função que o 'login.py' tentava importar)
     """
-    # 1. Encontra o usuário pelo email
-    db_user = db.query(User).filter(User.email == email).first()
+    # 1. Encontra o usuário pelo email (usando 'Usuario')
+    db_user = db.query(Usuario).filter(Usuario.email == email).first()
 
     # 2. Se o usuário não existe, retorna Falso
     if not db_user:
         return False
         
     # 3. Se o usuário foi encontrado, verifica a senha
-    #    (Usando a sua função 'verify_password')
     if not verify_password(senha, db_user.hashed_password):
         return False
 
@@ -58,12 +53,11 @@ def autenticar_usuario(db: Session, email: str, senha: str) -> User | bool:
     return db_user
 
 
-# --- Função de Criação de Token (A outra que faltava) ---
+# --- Função de Criação de Token (Usada pelo Login) ---
 
 def criar_token_de_acesso(data: dict) -> str:
     """
     Gera um novo token de acesso JWT.
-    (Esta é a outra função que o 'login.py' tentava importar)
     """
     dados_para_codificar = data.copy()
     
@@ -75,7 +69,3 @@ def criar_token_de_acesso(data: dict) -> str:
     token_jwt_codificado = jwt.encode(dados_para_codificar, SECRET_KEY, algorithm=ALGORITHM)
     
     return token_jwt_codificado
-
-# (Você também pode adicionar uma função 'verificar_token_acesso' aqui
-#  para proteger rotas no futuro, mas por enquanto isso é o suficiente
-#  para fazer o login funcionar.)

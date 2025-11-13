@@ -8,38 +8,46 @@ from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
 
-from src.database import get_db, Base # Importa Base do arquivo do banco de dados
+from src.database import get_db, Base 
 
-# --- Modelo de Resposta Pydantic ---
+# --- 1. Modelo de Entrada Pydantic ---
 class SacolaItem(BaseModel):
-    # Campos que o cliente envia para adicionar um item
     item_id: int
-    restaurant_id: str # O Place ID do restaurante
+    restaurant_id: str 
     quantidade: int = 1
     observacao: Optional[str] = None
-    
+    nome: str
+    preco: float
+
+# --- 2. Modelo de Resposta Pydantic ---
+class SacolaItemResponse(BaseModel):
+    id: int
+    user_id: str
+    item_id: int
+    restaurant_id: str
+    quantidade: int
+    observacao: Optional[str] = None
+    nome: str
+    preco_unitario: float
+
     class Config:
         from_attributes = True
 
-# --- Esquema Pydantic para Atualização (NOVO) ---
+# --- Esquema Pydantic para Atualização ---
 class SacolaItemUpdate(BaseModel):
-    quantidade: int # A única coisa que pode ser atualizada nesta rota
+    quantidade: int
 
-class SacolaItemResponse(SacolaItem):
-    # Campos retornados após a criação/consulta
-    id: int
-    user_id: str
-    
-# --- Modelo de Item da Sacola (SQLAlchemy) ---
+# --- 3. Modelo de Item da Sacola (SQLAlchemy / Tabela) ---
 class SacolaItemModel(Base):
     __tablename__ = "sacola_items"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, index=True, nullable=False)
+    user_id = Column(String, index=True, nullable=False) 
     restaurant_id = Column(String, index=True, nullable=False)
-    item_id = Column(Integer, nullable=False) # Referência ao ID do Item
+    item_id = Column(Integer, nullable=False)
+    nome = Column(String, nullable=False, default="Item") 
     quantidade = Column(Integer, default=1)
-    preco_unitario = Column(Float, nullable=False) # Preço no momento da compra
+    preco_unitario = Column(Float, nullable=False)
     observacao = Column(String, nullable=True)
     criado_em = Column(DateTime, default=datetime.utcnow)
 
@@ -49,52 +57,50 @@ router = APIRouter(
     tags=["Sacola"]
 )
 
-# --- FUNÇÃO HELPER: MOCK DE PREÇO ---
-def get_mock_price(item_id: int) -> float:
-    """Retorna um preço mock (simulado) baseado no ID para testes."""
-    if item_id == 101: return 35.90
-    if item_id == 102: return 18.50
-    if item_id == 103: return 6.00
-    return 10.00 # Preço padrão
-
 # --- ROTA: ADICIONAR ITEM À SACOLA (POST) ---
-@router.post("/{user_id}", response_model=SacolaItemResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{user_id}", response_model=SacolaItemResponse, status_code=status.HTTP_200_OK)
 def add_item_to_sacola(
     user_id: str, 
-    item: SacolaItem, 
+    item: SacolaItem,
     db: Session = Depends(get_db)
 ):
-    """Adiciona um item à sacola do usuário. Salva no banco de dados."""
+    """
+    Adiciona um item à sacola. 
+    Se o item já existir, atualiza a quantidade.
+    """
     
-    # 1. Simular obtenção do preço unitário atual
-    preco_unitario = get_mock_price(item.item_id)
+    # --- LÓGICA DE CORREÇÃO ---
+    # 1. Procura se o item JÁ ESTÁ na sacola do usuário
+    item_existente = db.query(SacolaItemModel).filter(
+        SacolaItemModel.user_id == user_id,
+        SacolaItemModel.item_id == item.item_id,
+        SacolaItemModel.restaurant_id == item.restaurant_id
+    ).first()
     
-    # 2. Criar o novo item da sacola
-    novo_item_sacola = SacolaItemModel(
-        user_id=user_id,
-        restaurant_id=item.restaurant_id,
-        item_id=item.item_id,
-        quantidade=item.quantidade,
-        preco_unitario=preco_unitario,
-        observacao=item.observacao,
-        criado_em=datetime.utcnow()
-    )
-
-    # 3. Persistir no DB
     try:
-        db.add(novo_item_sacola)
-        db.commit()
-        db.refresh(novo_item_sacola)
+        if item_existente:
+            # 2. Se JÁ EXISTE, apenas soma a quantidade
+            item_existente.quantidade += item.quantidade
+            db.commit()
+            db.refresh(item_existente)
+            return item_existente
         
-        # 4. Retornar a resposta formatada
-        return SacolaItemResponse(
-            id=novo_item_sacola.id,
-            user_id=novo_item_sacola.user_id,
-            item_id=novo_item_sacola.item_id,
-            restaurant_id=novo_item_sacola.restaurant_id,
-            quantidade=novo_item_sacola.quantidade,
-            observacao=novo_item_sacola.observacao
-        )
+        else:
+            # 3. Se NÃO EXISTE, cria um novo
+            novo_item_sacola = SacolaItemModel(
+                user_id=user_id,
+                restaurant_id=item.restaurant_id,
+                item_id=item.item_id,
+                nome=item.nome,
+                quantidade=item.quantidade,
+                preco_unitario=item.preco,
+                observacao=item.observacao,
+                criado_em=datetime.utcnow()
+            )
+            db.add(novo_item_sacola)
+            db.commit()
+            db.refresh(novo_item_sacola)
+            return novo_item_sacola
 
     except Exception as e:
         db.rollback()
@@ -105,26 +111,21 @@ def add_item_to_sacola(
 @router.get("/{user_id}", response_model=List[SacolaItemResponse])
 def get_sacola(user_id: str, db: Session = Depends(get_db)):
     """Consulta todos os itens na sacola de um usuário."""
-    
     itens = db.query(SacolaItemModel).filter(SacolaItemModel.user_id == user_id).all()
-    
     if not itens:
-        # Retorna lista vazia em vez de 404 se a sacola estiver vazia
         return [] 
-        
     return itens
 
-# --- NOVA ROTA: ATUALIZAR QUANTIDADE DO ITEM NA SACOLA (PUT) ---
+# --- ROTA: ATUALIZAR QUANTIDADE (PUT) ---
 @router.put("/{user_id}/{sacola_item_id}", response_model=SacolaItemResponse)
 def update_item_quantity(
     user_id: str, 
     sacola_item_id: int,
-    update_data: SacolaItemUpdate, # Recebe apenas a nova quantidade
+    update_data: SacolaItemUpdate,
     db: Session = Depends(get_db)
 ):
     """Atualiza a quantidade de um item específico na sacola."""
     
-    # 1. Encontrar o item
     db_item = db.query(SacolaItemModel).filter(
         SacolaItemModel.id == sacola_item_id,
         SacolaItemModel.user_id == user_id
@@ -133,46 +134,37 @@ def update_item_quantity(
     if db_item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Item não encontrado na sacola do usuário especificado."
+            detail="Item não encontrado na sacola."
         )
 
-    # 2. Validar a nova quantidade
     if update_data.quantidade <= 0:
-        # Se a quantidade for zero ou negativa, sugere-se a exclusão (DELETE)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A quantidade deve ser maior que zero. Use a rota DELETE para remover."
+            detail="A quantidade deve ser maior que zero. Use DELETE para remover."
         )
 
-    # 3. Atualizar e Persistir
     try:
         db_item.quantidade = update_data.quantidade
-        
         db.commit()
         db.refresh(db_item)
-        
-        # Retornar o item atualizado
         return db_item
     
     except Exception as e:
         db.rollback()
-        print(f"Erro ao atualizar item na sacola: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Erro interno ao atualizar item na sacola."
+            detail="Erro interno ao atualizar item."
         )
-
 
 # --- ROTA: DELETAR ITEM DA SACOLA (DELETE) ---
 @router.delete("/{user_id}/{sacola_item_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_item_from_sacola(
     user_id: str, 
-    sacola_item_id: int,  # O ID da linha na tabela sacola_items
+    sacola_item_id: int,
     db: Session = Depends(get_db)
 ):
     """Remove um item específico da sacola do usuário pelo ID do registro."""
     
-    # 1. Encontrar o item na sacola, garantindo que pertence ao usuário
     db_item = db.query(SacolaItemModel).filter(
         SacolaItemModel.id == sacola_item_id,
         SacolaItemModel.user_id == user_id
@@ -181,20 +173,17 @@ def delete_item_from_sacola(
     if db_item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Item não encontrado na sacola do usuário especificado."
+            detail="Item não encontrado na sacola."
         )
 
-    # 2. Deletar e Persistir
     try:
         db.delete(db_item)
         db.commit()
-        # Retornamos 204 No Content (padrão para DELETE bem-sucedido)
         return {"detail": "Item removido com sucesso."}
     
     except Exception as e:
         db.rollback()
-        print(f"Erro ao deletar item da sacola: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="Erro interno ao remover item da sacola."
+            detail="Erro interno ao remover item."
         )

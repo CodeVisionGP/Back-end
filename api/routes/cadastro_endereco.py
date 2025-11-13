@@ -23,7 +23,7 @@ FIREBASE_CREDENTIALS_PATH = os.getenv("FIREBASE_CREDENTIALS_PATH")
 
 
 # --- Inicialização Condicional do Firebase Admin ---
-# (Mantida aqui, mas idealmente deveria estar no main.py)
+# (Seu código de inicialização do Firebase)
 db_firestore = None
 if not _apps:
     initialized_successfully = False
@@ -106,8 +106,8 @@ async def save_to_firestore(uid: str, data: Dict[str, Any]):
 # --- ROTA PRINCIPAL: CADASTRO COM GEOCODIFICAÇÃO ---
 @router.post("/{user_id}", status_code=status.HTTP_201_CREATED)
 async def cadastrar_endereco(
-    user_id: str, 
-    endereco: schemas.EnderecoCreate,  # <-- USA O SCHEMA DE ENTRADA
+    user_id: int, # <-- CORREÇÃO: Mudado de str para int
+    endereco: schemas.EnderecoCreate,
     db: Session = Depends(get_db)
 ):
     """Cadastra um endereço, geocodifica (preenche lat/lng automaticamente) e salva no DB/Firestore."""
@@ -127,7 +127,8 @@ async def cadastrar_endereco(
         raise HTTPException(status_code=500, detail=f"Erro no serviço de geocodificação: {e}")
 
     # 3. Verifica se já existe (SQLAlchemy)
-    existente = db.query(Endereco).filter(Endereco.user_id == user_id).first() # <-- USA O MODELO
+    # (A query agora compara int com int, o que está correto)
+    existente = db.query(Endereco).filter(Endereco.user_id == user_id).first() 
     
     # 4. Cria o objeto de dados final
     endereco_data = endereco.model_dump()
@@ -143,19 +144,20 @@ async def cadastrar_endereco(
         mensagem = "Endereço atualizado com sucesso!"
     else:
         # Cadastra novo endereço
-        novo_endereco = Endereco(user_id=user_id, **endereco_data) # <-- USA O MODELO
+        novo_endereco = Endereco(user_id=user_id, **endereco_data)
         db.add(novo_endereco)
         db.commit()
         db.refresh(novo_endereco)
         mensagem = "Endereço cadastrado com sucesso!"
 
-    # 5. Sincroniza a localização para o Front-end (Firestore) em segundo plano
+    # 5. Sincroniza a localização para o Front-end (Firestore)
     firestore_data = {
         "latitude": coordenadas['lat'],
         "longitude": coordenadas['lng'],
         "rua": endereco.rua,
     }
-    asyncio.create_task(save_to_firestore(user_id, firestore_data))
+    # CORREÇÃO: O Firestore precisa de um 'uid' (string)
+    asyncio.create_task(save_to_firestore(str(user_id), firestore_data))
     
     return {
         "mensagem": mensagem, 
@@ -164,8 +166,11 @@ async def cadastrar_endereco(
 
 
 # --- ROTA DE CONSULTA ---
-@router.get("/{user_id}", response_model=schemas.EnderecoResponse) # <-- USA O SCHEMA DE SAÍDA
-def consultar_endereco(user_id: str, db: Session = Depends(get_db)):
+@router.get("/{user_id}", response_model=schemas.EnderecoResponse) 
+def consultar_endereco(
+    user_id: int, # <-- CORREÇÃO: Mudado de str para int
+    db: Session = Depends(get_db)
+):
     """Consulta endereço de um usuário específico, retornando também lat/lng."""
     
     # Busca no banco usando o MODELO
@@ -174,5 +179,4 @@ def consultar_endereco(user_id: str, db: Session = Depends(get_db)):
     if not endereco_db:
         raise HTTPException(status_code=404, detail="Usuário ainda não possui endereço cadastrado.")
     
-    # Retorna o objeto do banco, que o FastAPI converterá para o SCHEMA de resposta
     return endereco_db

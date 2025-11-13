@@ -1,54 +1,39 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import List # AQUI <<< Importação para corrigir o erro "List is not defined"
+from typing import List 
+from datetime import datetime
 
+# --- IMPORTAÇÕES CORRIGIDAS ---
 from src.database import get_db
-
-# --- IMPORTANTE ---
-# Reutilizar os modelos e Enums
-from api.routes.pedidos import OrderModel, OrderStatus, OrderResponse
-
-# --- AQUI <<< Importar o gerenciador de WebSocket ---
 from api.connection_manager import manager
+from src import schemas 
+
+# 1. Importar os MODELOS do lugar certo (src/models)
+from src.models.pedidos import OrderModel, OrderStatus
+from src.models.items import Item as ItemModel
 
 # ===================================================================
-# 1. MODELO PYDANTIC (Requisição)
+# ROTEADOR 1: ADMIN DE PEDIDOS
 # ===================================================================
 
-class OrderStatusUpdate(BaseModel):
-    """
-    Modelo que o restaurante enviará no corpo (body) da requisição
-    para atualizar um status.
-    """
-    status: OrderStatus # Ex: { "status": "EM_PREPARO" }
-
-# ===================================================================
-# 2. ROTEADOR (Admin do Restaurante)
-# ===================================================================
-
-router = APIRouter(
+router_pedidos = APIRouter(
     prefix="/api/restaurante/pedidos",
-    tags=["Admin Restaurante"]
+    tags=["Admin Restaurante (Pedidos)"]
 )
 
-# ===================================================================
-# 3. ENDPOINT DE ATUALIZAÇÃO (PATCH)
-# ===================================================================
-
-@router.patch("/{order_id}/status", response_model=OrderResponse)
-async def update_order_status( # AQUI <<< Função agora é 'async def'
+@router_pedidos.patch("/{order_id}/status", response_model=schemas.OrderResponse)
+async def update_order_status(
     order_id: int, 
-    update_data: OrderStatusUpdate, 
+    update_data: schemas.OrderStatusUpdate, 
     db: Session = Depends(get_db)
 ):
     """
     Endpoint para o restaurante atualizar o status de um pedido.
-    (Ex: de 'PENDENTE' para 'CONFIRMADO')
     """
-    
-    # 1. Encontra o pedido no banco
-    db_order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
+    from sqlalchemy.orm import joinedload
+    db_order = db.query(OrderModel).options(
+        joinedload(OrderModel.itens)
+    ).filter(OrderModel.id == order_id).first()
     
     if not db_order:
         raise HTTPException(
@@ -56,38 +41,69 @@ async def update_order_status( # AQUI <<< Função agora é 'async def'
             detail="Pedido não encontrado"
         )
         
-    # 2. Atualiza o status
-    print(f"Atualizando pedido {order_id} de '{db_order.status.value}' para '{update_data.status.value}'")
     db_order.status = update_data.status
     
-    # 3. Salva a mudança
     try:
         db.commit()
         db.refresh(db_order)
     except Exception as e:
         db.rollback()
-        print(f"Erro ao atualizar status: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Não foi possível atualizar o status do pedido."
         )
     
-    # --- AQUI <<< 4. DISPARAR NOTIFICAÇÃO WEBSOCKET ---
-    # Serializa o pedido atualizado usando o Pydantic
-    response_data = OrderResponse.from_attributes(db_order).model_dump()
-    
-    # Envia os dados para todos os clientes ouvindo este order_id
+    response_data = schemas.OrderResponse.from_attributes(db_order).model_dump()
     await manager.broadcast_to_order(order_id, response_data)
-    # --- FIM DA ADIÇÃO ---
     
-    # 5. Retorna o pedido completo e atualizado
     return db_order
 
-@router.get("/", response_model=List[OrderResponse])
-async def get_all_orders_for_restaurant(db: Session = Depends(get_db)): # AQUI <<< Função agora é 'async def'
+@router_pedidos.get("/", response_model=List[schemas.OrderResponse])
+async def get_all_orders_for_restaurant(db: Session = Depends(get_db)):
     """
     Endpoint para o restaurante ver todos os pedidos
-    (ex: um painel de controle).
     """
-    orders = db.query(OrderModel).order_by(OrderModel.id.desc()).all()
+    from sqlalchemy.orm import joinedload
+    
+    orders = db.query(OrderModel).options(
+        joinedload(OrderModel.itens)
+    ).order_by(OrderModel.id.desc()).all()
+    
     return orders
+
+# ===================================================================
+# ROTEADOR 2: ADMIN DE CARDÁPIO (CADASTRAR ITENS)
+# ===================================================================
+
+router_cardapio = APIRouter(
+    prefix="/api/restaurante/cardapio",
+    tags=["Admin Restaurante (Cardápio)"]
+)
+
+@router_cardapio.post("/{google_place_id}/items", response_model=schemas.ItemResponse)
+def create_item_for_restaurant(
+    google_place_id: str,
+    item_data: schemas.ItemCreate, 
+    db: Session = Depends(get_db)
+):
+    """
+    Cadastra um novo item (produto) para um restaurante específico.
+    """
+    
+    db_item = ItemModel(
+        **item_data.model_dump(),
+        restaurant_id=google_place_id 
+    )
+    
+    try:
+        db.add(db_item)
+        db.commit()
+        db.refresh(db_item) 
+        return db_item
+    
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Não foi possível cadastrar o item: {e}"
+        )

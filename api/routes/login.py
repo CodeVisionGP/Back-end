@@ -6,37 +6,34 @@ from sqlalchemy.orm import Session
 from urllib.parse import urlencode
 
 # --- Imports da Aplicação ---
-from deps import get_db
-from src.models.usuario import User
-from src.oauth import oauth
+# CORREÇÃO 1: 'deps' -> 'src.database'
+from src.database import get_db 
+# CORREÇÃO 2: 'User' -> 'Usuario'
+from src.models.usuario import Usuario 
+from api.config import oauth, settings 
 from src.security import autenticar_usuario, criar_token_de_acesso
 
 # --- Novos Imports para Telefone e Twilio ---
 import random
-import os  # Para ler variáveis de ambiente (.env)
+import os
 from pydantic import BaseModel
-from twilio.rest import Client # O cliente da API do Twilio
+from twilio.rest import Client
 
-
-# Esta é a variável que você precisa atualizar toda vez que o ngrok reiniciar
-NGROK_BASE_URL = "https://unnoisily-prominent-ermelinda.ngrok-free.dev"
-
-# Esta é a URL do seu frontend (rodando em https)
-FRONTEND_URL = "https://localhost:3000"
+# Usar o primeiro da lista de settings como padrão
+FRONTEND_URL = settings.FRONTEND_URLS[0] if settings.FRONTEND_URLS else "http://localhost:3000"
 
 # Crie o router ANTES de usá-lo
-router = APIRouter(tags=["Autenticação"])
+router = APIRouter(tags=["Autênticação"])
 
-# --- Modelos Pydantic para Login por Telefone ---
+# ... (Modelos Pydantic e temp_storage) ...
 class RequestCodeBody(BaseModel):
     phone: str
 
 class VerifyCodeBody(BaseModel):
     phone: str
-    code: str
-
-# --- Armazenamento temporário (NÃO USE EM PRODUÇÃO!) ---
-# Em produção, use um banco de dados ou um cache (Redis)
+    # CORREÇÃO 3: Faltava o campo 'code' que a rota usa
+    code: str 
+    
 temp_code_storage = {}
 
 
@@ -47,8 +44,14 @@ async def login_google(request: Request):
     """
     Inicia o fluxo de login com o Google, redirecionando o usuário.
     """
-    redirect_uri = f"{NGROK_BASE_URL}/api/auth/google/callback"
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    redirect_uri = settings.GOOGLE_REDIRECT_URI
+    
+    print("---------------------------------")
+    print(f"PASSO 1 (LOGIN): Iniciando. Salvando sessão...")
+    response = await oauth.google.authorize_redirect(request, redirect_uri)
+    print(f"PASSO 1 (LOGIN): Sessão antes do redirect: {request.session}")
+    print("---------------------------------")
+    return response
 
 
 @router.get("/google/callback")
@@ -56,17 +59,31 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
     """
     Callback do Google. Processa e redireciona para o frontend com o token.
     """
-    token = await oauth.google.authorize_access_token(request)
+    print("---------------------------------")
+    print(f"PASSO 2 (CALLBACK): Recebido. Lendo sessão...")
+    print(f"PASSO 2 (CALLBACK): Sessão na chegada: {request.session}")
+    print("---------------------------------")
+    
+    try:
+        token = await oauth.google.authorize_access_token(request)
+    except Exception as e:
+        print(f"!!! ERRO NO authorize_access_token: {e}")
+        print(f"Sessão após o erro: {request.session}")
+        raise e
+        
+    print("PASSO 3 (SUCESSO): Token autorizado!")
     user_info = token.get("userinfo")
 
     if not user_info or not user_info.get("email"):
         raise HTTPException(status_code=400, detail="Não foi possível obter informações do usuário do Google.")
 
     email = user_info["email"]
-    db_user = db.query(User).filter(User.email == email).first()
+    # CORREÇÃO 4: 'User' -> 'Usuario'
+    db_user = db.query(Usuario).filter(Usuario.email == email).first()
 
     if not db_user:
-        db_user = User(
+        # CORREÇÃO 5: 'User' -> 'Usuario'
+        db_user = Usuario(
             nome_completo=user_info.get("name", "Usuário Google"),
             email=email,
             hashed_password="google_oauth_placeholder", 
@@ -88,39 +105,29 @@ async def google_callback(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/facebook")
 async def login_facebook(request: Request):
-    """
-    Inicia o fluxo de login com o Facebook.
-    """
-    redirect_uri = f"{NGROK_BASE_URL}/api/auth/facebook/callback"
-
     return await oauth.facebook.authorize_redirect(
         request, 
-        redirect_uri,
+        settings.FACEBOOK_REDIRECT_URI,
         scope="email public_profile" 
     )
 
 
 @router.get("/facebook/callback")
 async def facebook_callback(request: Request, db: Session = Depends(get_db)):
-    """
-    Callback do Facebook. Processa e redireciona para o frontend com o token.
-    """
     token = await oauth.facebook.authorize_access_token(request)
-    
     resp = await oauth.facebook.get("me?fields=id,name,email", token=token)
     profile = resp.json()
-
     email = profile.get("email")
     if not email:
         raise HTTPException(
             status_code=400, 
             detail="O provedor do Facebook não forneceu um e-mail."
         )
-
-    db_user = db.query(User).filter(User.email == email).first()
-
+    # CORREÇÃO 6: 'User' -> 'Usuario'
+    db_user = db.query(Usuario).filter(Usuario.email == email).first()
     if not db_user:
-        db_user = User(
+        # CORREÇÃO 7: 'User' -> 'Usuario'
+        db_user = Usuario(
             nome_completo=profile.get("name", "Usuário Facebook"),
             email=email,
             hashed_password="facebook_oauth_placeholder",
@@ -129,12 +136,10 @@ async def facebook_callback(request: Request, db: Session = Depends(get_db)):
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-
+        
     access_token = criar_token_de_acesso(data={"sub": db_user.email})
-
     params = {"token": access_token}
     redirect_url = f"{FRONTEND_URL}/auth/callback?{urlencode(params)}"
-    
     return RedirectResponse(url=redirect_url)
 
 
@@ -145,68 +150,54 @@ async def login_para_token_de_acesso(
     db: Session = Depends(get_db),
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
-    """
-    Autentica um usuário com email (username) e senha.
-    Retorna um token de acesso Bearer.
-    """
+    # 'autenticar_usuario' já foi corrigido para usar 'Usuario'
     usuario = autenticar_usuario(db, form_data.username, form_data.password)
-    
     if not usuario:
         raise HTTPException(
             status_code=401,
             detail="Email ou senha incorretos",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
     access_token = criar_token_de_acesso(
         data={"sub": usuario.email}
     )
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+    # Retorna o token E os dados do usuário
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user": usuario # Envia o objeto do usuário
+    }
 
 
 # --- LOGIN COM TELEFONE (ETAPA 1: Enviar Código) ---
 
 @router.post("/phone/request-code")
 async def request_phone_code(body: RequestCodeBody):
-    if len(body.phone) < 10: # Validação muito simples
+    if len(body.phone) < 10: 
         raise HTTPException(status_code=400, detail="Telefone inválido.")
-
-    # Gera um código aleatório de 6 dígitos
     code = str(random.randint(100000, 999999))
-    
-    # Armazena o código temporariamente associado ao telefone
     temp_code_storage[body.phone] = code
-
-    # --- INÍCIO DA LÓGICA REAL DE ENVIO DE SMS (TWILIO) ---
     try:
-        # Pega as credenciais do ambiente (do arquivo .env)
         account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
         auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
         twilio_phone = os.environ.get("TWILIO_PHONE_NUMBER")
-
         if not all([account_sid, auth_token, twilio_phone]):
             print("!!! ERRO DE CONFIGURAÇÃO: Variáveis Twilio não definidas no .env")
             raise HTTPException(status_code=500, detail="Serviço de SMS não configurado.")
-
         client = Client(account_sid, auth_token)
-
-        # ⚠️ IMPORTANTE: O número 'to' deve estar no formato E.164
-        # Exemplo: +5511999998888 (para Brasil)
         message = client.messages.create(
             body=f"Seu código de login iFome é: {code}",
             from_=twilio_phone,
             to=body.phone  
         )
-        
         print(f"SMS enviado para {body.phone}. SID: {message.sid}")
-
     except Exception as e:
         print(f"!!! ERRO AO ENVIAR SMS: {e}")
-        # Se falhar, não informe o erro exato ao usuário por segurança
-        raise HTTPException(status_code=500, detail="Erro ao enviar o código SMS.")
-    # --- FIM DA LÓGICA REAL DE ENVIO DE SMS ---
-
+        # Em desenvolvimento, retorne o código para facilitar o teste
+        # Em produção, comente a linha abaixo e descomente a 'raise'
+        return {"message": f"Erro (dev mode): Código seria {code}"}
+        # raise HTTPException(status_code=500, detail="Erro ao enviar o código SMS.")
+    
     return {"message": "Código enviado com sucesso!"}
 
 
@@ -214,38 +205,35 @@ async def request_phone_code(body: RequestCodeBody):
 
 @router.post("/phone/verify-code")
 async def verify_phone_code(body: VerifyCodeBody, db: Session = Depends(get_db)):
-    
     stored_code = temp_code_storage.get(body.phone)
-
     if not stored_code:
         raise HTTPException(status_code=404, detail="Nenhum código solicitado para este número.")
-
     if stored_code != body.code:
         raise HTTPException(status_code=400, detail="Código inválido.")
-
-    # O código está correto! Limpa o código usado.
+    
     del temp_code_storage[body.phone]
-
-    # (Assumindo que seu model 'User' tem um campo 'telefone' que é único)
-    db_user = db.query(User).filter(User.telefone == body.phone).first()
-
+    
+    # CORREÇÃO 8: 'User' -> 'Usuario'
+    db_user = db.query(Usuario).filter(Usuario.telefone == body.phone).first()
+    
     if not db_user:
-        # Cria um novo usuário se ele não existir
-        db_user = User(
+        # CORREÇÃO 9: 'User' -> 'Usuario'
+        db_user = Usuario(
             telefone=body.phone,
-            nome_completo=f"Usuário {body.phone}", # Placeholder
-            hashed_password="phone_oauth_placeholder", # Placeholder
+            nome_completo=f"Usuário {body.phone}",
+            # Telefone não pode ser usado para email, então criamos um placeholder
+            email=f"{body.phone}@phone.placeholder", 
+            hashed_password="phone_oauth_placeholder",
             is_active=True
         )
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-    
-    # Cria um token de acesso real usando sua função de segurança
-    # O 'sub' (subject) do token será o telefone do usuário
-    access_token = criar_token_de_acesso(data={"sub": db_user.telefone})
-
+        
+    # O 'sub' do token deve ser algo único. Usaremos o email (mesmo que seja placeholder)
+    access_token = criar_token_de_acesso(data={"sub": db_user.email})
     return {
         "access_token": access_token, 
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user": db_user # Retorna o usuário
     }

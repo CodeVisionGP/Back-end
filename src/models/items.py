@@ -13,7 +13,7 @@ class Item(Base):
     restaurant_id = Column(String, index=True, nullable=False) 
     nome = Column(String, nullable=False)
     preco = Column(Float, nullable=False)
-    descricao = Column(String, nullable=True)
+    descricao = Column(String, nullable=True)   
     categoria = Column(String, nullable=True)
     imagem_url = Column(String, nullable=True)
     ativo = Column(Boolean, default=True)

@@ -1,222 +1,90 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, relationship
-import enum
-from sqlalchemy import Column, Integer, String, Boolean, Float, Text, ForeignKey, Enum
+from sqlalchemy.orm import Session
+from typing import List
 
-from src.database import get_db, Base # Importa Base e get_db
-from pydantic import BaseModel
-from typing import List, Optional
+# --- IMPORTAÇÕES CORRIGIDAS ---
+from src.database import get_db
+# 1. Importar os MODELOS do lugar certo (src/models)
+#    (NÃO defina 'class OrderModel' aqui)
+from src.models.pedidos import OrderModel, PedidoItem, OrderStatus
+from src.models.items import Item as ItemModel
+# 2. Importar os SCHEMAS
+from src import schemas
 
-# ===================================================================
-# 1. ENUM E MODELOS PYDANTIC (Requisição)
-# ===================================================================
-
-class OrderStatus(str, enum.Enum):
-    PENDENTE = "PENDENTE"
-    CONFIRMADO = "CONFIRMADO"
-    EM_PREPARO = "EM_PREPARO"
-    PRONTO_PARA_ENTREGA = "PRONTO_PARA_ENTREGA"
-    EM_ROTA = "EM_ROTA"
-    ENTREGUE = "ENTREGUE"
-    CANCELADO = "CANCELADO"
-
-class ItemCreate(BaseModel):
-    id: int      # ID do *Produto*
-    quantity: int
-
-class AddressCreate(BaseModel):
-    nomeDestinatario: str
-    cep: str
-    numero: str
-    rua: str
-    complemento: Optional[str] = None
-    bairro: str
-    cidade: str
-    estado: str
-
-class OrderCreate(BaseModel):
-    items: List[ItemCreate]
-    total: float
-    address: AddressCreate
-    paymentMethod: str
-    observations: Optional[str] = None
-    changeFor: Optional[str] = None
-
-# ===================================================================
-# 2. MODELOS DE BANCO DE DADOS (SQLALCHEMY)
-# ===================================================================
-
-class OrderModel(Base):
-    __tablename__ = "orders"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    status = Column(Enum(OrderStatus), default=OrderStatus.PENDENTE, nullable=False)
-    total = Column(Float, nullable=False)
-    paymentMethod = Column(String, nullable=False)
-    # --- CAMPOS DUPLICADOS REMOVIDOS DAQUI ---
-    observations = Column(Text, nullable=True)
-    changeFor = Column(String, nullable=True) # Armazena "5000" (centavos)
-    
-    # Relação 1-para-1 com Endereço
-    address = relationship("OrderAddressModel", back_populates="order", uselist=False, cascade="all, delete-orphan")
-    
-    # Relação 1-para-Muitos com Itens
-    items = relationship("OrderItemModel", back_populates="order", cascade="all, delete-orphan")
-
-class OrderAddressModel(Base):
-    __tablename__ = "order_addresses"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    nomeDestinatario = Column(String)
-    cep = Column(String)
-    numero = Column(String)
-    rua = Column(String)
-    complemento = Column(String, nullable=True)
-    bairro = Column(String)
-    cidade = Column(String)
-    estado = Column(String)
-    
-    order_id = Column(Integer, ForeignKey("orders.id"))
-    order = relationship("OrderModel", back_populates="address")
-
-class OrderItemModel(Base):
-    __tablename__ = "order_items"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(Integer, nullable=False) # O ID do produto no seu catálogo
-    quantity = Column(Integer, nullable=False)
-    
-    order_id = Column(Integer, ForeignKey("orders.id"))
-    order = relationship("OrderModel", back_populates="items")
-
-# ===================================================================
-# 3. MODELOS DE DADOS (PYDANTIC) - Resposta
-# ===================================================================
-
-class ItemResponse(BaseModel):
-    id: int
-    product_id: int
-    quantity: int
-    
-    class Config:
-        from_attributes = True
-
-class AddressResponse(BaseModel):
-    id: int
-    nomeDestinatario: str
-    rua: str
-    numero: str
-    
-    class Config:
-        from_attributes = True
-
-class OrderResponse(BaseModel):
-    id: int
-    status: OrderStatus # <-- Já estava correto
-    total: float
-    paymentMethod: str
-    address: AddressResponse
-    items: List[ItemResponse]
-    
-    class Config:
-        from_attributes = True
-
-# ===================================================================
-# 4. ROTEADOR E ENDPOINT DE CRIAÇÃO
-# ===================================================================
-
+# --- ROTEADOR ---
 router = APIRouter(
-    prefix="/pedidos",  # Sem /api, conforme seu frontend
-    tags=["Pedidos"]
+    prefix="/api/pedidos",
+    tags=["Pedidos (Cliente)"]
 )
 
-@router.post("/", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
-def create_order(order: OrderCreate, db: Session = Depends(get_db)):
+# --- ROTAS ---
+@router.post("/", response_model=schemas.OrderResponse, status_code=status.HTTP_201_CREATED)
+def create_order(
+    pedido_data: schemas.PedidoCreate,
+    db: Session = Depends(get_db)
+    # TODO: user_id = Depends(get_current_user)
+):
     """
-    Cria um novo pedido no banco de dados.
+    Cria um novo pedido (chamado pelo cliente ao fechar o carrinho).
     """
     
-    # Validação de Troco
-    if order.paymentMethod == "DINHEIRO" and order.changeFor:
-        try:
-            troco_valor = int(order.changeFor) / 100
-            if troco_valor < order.total:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, 
-                    detail="O valor do troco não pode ser menor que o total do pedido."
-                )
-        except (ValueError, TypeError):
+    itens_para_salvar_no_db = []
+    preco_total_calculado = 0.0
+
+    # 1. VALIDAÇÃO: Pega os itens do carrinho e busca no banco
+    for item_carrinho in pedido_data.itens_do_carrinho:
+        
+        item_db = db.query(ItemModel).filter(
+            ItemModel.id == item_carrinho.item_id,
+            ItemModel.ativo == True
+        ).first()
+        
+        if not item_db:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, 
-                detail="Formato inválido para o valor do troco."
+                status_code=404, 
+                detail=f"Item ID {item_carrinho.item_id} não encontrado ou inativo."
             )
-            
-    # 1. Cria o Endereço
-    db_address = OrderAddressModel(**order.address.model_dump())
-    
-    # 2. Cria os Itens
-    db_items = [
-        OrderItemModel(product_id=item.id, quantity=item.quantity) 
-        for item in order.items
-    ]
-    
-    # 3. Cria o Pedido principal
-    db_order = OrderModel(
-        total=order.total,
-        paymentMethod=order.paymentMethod,
-        observations=order.observations,
-        changeFor=order.changeFor
-        # O 'status' usará o 'default=OrderStatus.PENDENTE'
+        
+        # 2. CÁLCULO: Calcula o subtotal e o total
+        preco_unitario_real = item_db.preco
+        preco_total_calculado += (preco_unitario_real * item_carrinho.quantidade)
+        
+        # 3. PREPARAÇÃO: Cria o objeto PedidoItem (sem salvar ainda)
+        novo_item_pedido = PedidoItem(
+            item_id=item_db.id,
+            quantidade=item_carrinho.quantidade,
+            preco_unitario_pago=preco_unitario_real
+        )
+        itens_para_salvar_no_db.append(novo_item_pedido)
+
+    if not itens_para_salvar_no_db:
+        raise HTTPException(status_code=400, detail="Carrinho vazio.")
+
+    # 4. CRIAÇÃO DO PEDIDO "PAI"
+    novo_pedido = OrderModel(
+        # TODO: user_id=user.id (ID do usuário logado)
+        user_id=1, # <--- MUDANÇA TEMPORÁRIA (use 1 como placeholder)
+        status=OrderStatus.PENDENTE, # O status inicial
+        total_price=preco_total_calculado,
+        restaurante_id=pedido_data.restaurante_id
     )
+
+    # 5. ASSOCIAÇÃO: "Pendura" os itens no pedido
+    novo_pedido.itens = itens_para_salvar_no_db
     
-    # 4. Associa o endereço e os itens ao pedido
-    db_order.address = db_address
-    db_order.items = db_items
-    
-    # 5. Salva no banco de dados
+    # 6. SALVAR TUDO (Transação)
     try:
-        db.add(db_order)
+        db.add(novo_pedido) 
         db.commit()
-        db.refresh(db_order)
+        db.refresh(novo_pedido)
+        
+        # (Aqui você também pode disparar um WebSocket para o restaurante!)
+        
+        return novo_pedido
+        
     except Exception as e:
         db.rollback()
-        print(f"Erro ao salvar no banco: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Não foi possível processar o pedido."
+            status_code=500, 
+            detail=f"Erro ao salvar pedido no banco: {e}"
         )
-        
-    return db_order
-
-# ===================================================================
-# 5. ENDPOINTS DE CONSULTA (Cliente) - (ETAPA 2)
-# ===================================================================
-
-@router.get("/meus-pedidos", response_model=List[OrderResponse])
-def get_my_orders(db: Session = Depends(get_db)):
-    """
-    (Versão Simplificada) Busca todos os pedidos.
-    TODO: Adicionar autenticação para buscar apenas os pedidos
-    do usuário logado (ex: filtrando por user_id).
-    """
-    # Ordena do mais novo para o mais antigo
-    orders = db.query(OrderModel).order_by(OrderModel.id.desc()).all()
-    return orders
-
-
-@router.get("/{order_id}", response_model=OrderResponse)
-def get_order_by_id(order_id: int, db: Session = Depends(get_db)):
-    """
-    Busca um pedido específico pelo seu ID.
-    TODO: Adicionar autenticação para garantir que o usuário
-    logado é o dono deste pedido.
-    """
-    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
-    
-    if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pedido não encontrado"
-        )
-        
-    return order
