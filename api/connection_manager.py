@@ -3,56 +3,46 @@ from typing import List, Dict
 from collections import defaultdict
 import json
 
-# --- A CORREÇÃO ESTÁ AQUI ---
-# Importe 'OrderResponse' do seu arquivo de schemas (src/schemas.py),
-# e não do arquivo de rotas (api/routes/pedidos.py).
-from src.schemas import OrderResponse 
+# Removemos imports desnecessários para evitar erros circulares
+# Apenas gerenciamos a conexão aqui.
 
 class ConnectionManager:
     """
     Gerencia as conexões WebSocket ativas.
     """
     def __init__(self):
+        # Dicionário que guarda uma lista de sockets para cada order_id
         self.active_connections: Dict[int, List[WebSocket]] = defaultdict(list)
 
     async def connect(self, websocket: WebSocket, order_id: int):
-        """Aceita e armazena uma nova conexão."""
+        """Aceita a conexão e guarda na lista."""
         await websocket.accept()
         self.active_connections[order_id].append(websocket)
-        print(f"Conexão [Order ID: {order_id}] - Conexão estabelecida.")
+        print(f"🔌 WebSocket Conectado! [Pedido #{order_id}] - Total conexões: {len(self.active_connections[order_id])}")
 
     def disconnect(self, websocket: WebSocket, order_id: int):
-        """Remove uma conexão da lista."""
-        try:
-            self.active_connections[order_id].remove(websocket)
-            print(f"Conexão [Order ID: {order_id}] - Conexão encerrada.")
+        """Remove a conexão da lista."""
+        if order_id in self.active_connections:
+            if websocket in self.active_connections[order_id]:
+                self.active_connections[order_id].remove(websocket)
+                print(f"🔌 WebSocket Desconectado [Pedido #{order_id}]")
+            
+            # Limpa a chave se não houver mais ninguém ouvindo
             if not self.active_connections[order_id]:
-                # Limpa a chave se for a última conexão
                 del self.active_connections[order_id]
-        except ValueError:
-            # Acontece se a conexão já foi removida
-            pass 
 
     async def broadcast_to_order(self, order_id: int, data: dict):
-        """
-        Envia uma mensagem JSON para todas as conexões
-        que estão ouvindo um order_id específico.
-        """
-        print(f"Broadcast [Order ID: {order_id}] - Enviando status: {data.get('status')}")
-        
-        # Pega a lista de conexões para este pedido
-        connections = self.active_connections.get(order_id, [])
-        
-        # Usamos list(connections) para fazer uma cópia.
-        # Isso evita erros se um cliente desconectar durante o broadcast.
-        for connection in list(connections):
-            try:
-                await connection.send_json(data)
-            except Exception as e:
-                # Lida com conexões que podem ter caído
-                print(f"Erro ao enviar para websocket: {e}. Removendo conexão.")
-                self.disconnect(connection, order_id)
+        """Envia dados para todos conectados naquele pedido."""
+        if order_id in self.active_connections:
+            print(f"📢 Enviando atualização para Pedido #{order_id}")
+            connections = self.active_connections[order_id]
+            
+            for connection in list(connections):
+                try:
+                    await connection.send_json(data)
+                except Exception as e:
+                    print(f"Erro ao enviar via socket: {e}")
+                    self.disconnect(connection, order_id)
 
-
-# Cria uma instância única (Singleton) que será usada em toda a aplicação
+# Instância única para ser usada em todo o app
 manager = ConnectionManager()

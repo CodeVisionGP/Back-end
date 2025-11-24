@@ -17,9 +17,6 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- A CRIAÇÃO DE TABELAS (create_all) NÃO É MAIS NECESSÁRIA AQUI OU NO main.py ---
-# Removemos a nota para que a criação não seja executada no main.py, 
-# pois a tabela já foi criada/atualizada.
 
 # função para fornecer sessão do banco
 def get_db():

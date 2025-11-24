@@ -10,8 +10,7 @@ class Endereco(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     
-    # --- CORREÇÃO 3: TIPO DO USER_ID ---
-    # 'String' -> 'Integer' para bater com o 'usuario.id'
+    # FK para Usuario (mantido como Integer, que é o tipo correto)
     user_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False)
 
     rua = Column(String)
@@ -25,5 +24,10 @@ class Endereco(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
 
-    # Ligação inversa com o Usuário
+    # Ligação com o Usuário
     dono = relationship("Usuario", back_populates="enderecos")
+    
+    # 🛑 CORREÇÃO FINAL: RELACIONAMENTO COM PEDIDOS 
+    # O OrderModel tem 'endereco = relationship("Endereco", back_populates="pedidos")'
+    # Esta linha completa o ciclo:
+    pedidos = relationship("OrderModel", back_populates="endereco")

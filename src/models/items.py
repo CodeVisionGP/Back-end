@@ -19,5 +19,5 @@ class Item(Base):
     ativo = Column(Boolean, default=True)
     criado_em = Column(DateTime, default=datetime.utcnow)
 
-    # Adicione relacionamentos se necessário
+    # Adicione relacionamentos se necessário\
     # ex: owner = relationship("Restaurante", back_populates="items")

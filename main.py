@@ -3,26 +3,18 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
-from authlib.integrations.starlette_client import OAuth
-from api.config import oauth, settings 
-from fastapi import HTTPException
-from typing import List, Optional
-import json
-
-# --- 1. IMPORTAR O BANCO E TODOS OS MODELOS ---
+from api.config import settings 
 from src.database import Base, engine 
 from src.models import (
     usuario, 
     endereco, 
     items, 
-    pedidos 
+    pedidos,
+    avaliacao
 )
-# --- CORREÇÃO AQUI ---
-# Importa o NOVO modelo de sacola do ARQUIVO DE ROTA
-# (Já que você o definiu lá)
 from api.routes import cadastro_sacola as sacola_model 
-
-# --- 2. IMPORTAR OS ROUTERS ---
+from api.routes import relatorios
+# --- 2. IMPORTAR ROTEADORES ---
 from api.routes import (
     consulta_restaurantes, 
     cadastro_endereco, 
@@ -31,21 +23,23 @@ from api.routes import (
     login,
     payment_methods,
     pedidos, 
-    restaurante_admin
+    restaurante_admin,
+    avaliacao 
 ) 
+
+# Importa o manager
 from api.connection_manager import manager
 
-# Carrega variáveis do .env
 load_dotenv()
 
-# --- 3. CRIAR AS TABELAS NO BANCO ---
-# (Agora ele também vai criar a tabela 'sacola_items')
+# Cria as tabelas se não existirem
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Backend Integrado")
 
 # --- Middlewares ---
-origins = ["*"] # Permite TODAS as origens
+origins = ["*"] 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -60,13 +54,14 @@ app.add_middleware(
     same_site='lax'
 )
 
-# --- 4. INCLUSÃO DAS ROTAS ---
+# --- 4. ROTAS ---
 app.include_router(cadastro_endereco.router)
 app.include_router(cadastro_usuario.router) 
-app.include_router(sacola_model.router) # <-- CORREÇÃO: Usa o 'sacola_model' importado
+app.include_router(sacola_model.router) 
 app.include_router(payment_methods.router)
 app.include_router(pedidos.router)
-
+app.include_router(relatorios.router)
+app.include_router(avaliacao.router)
 app.include_router(restaurante_admin.router_pedidos)
 app.include_router(restaurante_admin.router_cardapio)
 
@@ -93,8 +88,10 @@ async def websocket_endpoint(websocket: WebSocket, order_id: int):
     try:
         while True:
             await websocket.receive_text()
+            
     except WebSocketDisconnect:
         manager.disconnect(websocket, order_id)
+        
     except Exception as e:
         print(f"Erro no WebSocket [Order ID: {order_id}]: {e}")
         manager.disconnect(websocket, order_id)

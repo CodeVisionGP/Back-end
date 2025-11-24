@@ -1,10 +1,12 @@
 import re
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict, EmailStr
 from typing import Optional, List
 from datetime import datetime
-
-# --- Importação de Enums (do seu arquivo de pedidos) ---
 from enum import Enum 
+
+# -------------------------------------------------------------------
+# --- ENUMS ---
+# -------------------------------------------------------------------
 
 class OrderStatus(str, Enum):
     PENDENTE = "PENDENTE"
@@ -14,150 +16,165 @@ class OrderStatus(str, Enum):
     CONCLUIDO = "CONCLUIDO"
     CANCELADO = "CANCELADO"
 
-# --- Config base ---
+class TipoEntrega(str, Enum):
+    NORMAL = "NORMAL"
+    RAPIDA = "RAPIDA"
+    AGENDADA = "AGENDADA"
+
 class BaseSchema(BaseModel):
-    class Config:
-        from_attributes = True # Novo padrão do Pydantic V2
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-# ====================================================================
-# SCHEMAS DE ENDEREÇO
-# ====================================================================
+# -------------------------------------------------------------------
+# --- SCHEMAS DE ENTIDADES (BASE) ---
+# -------------------------------------------------------------------
 
+class UserBase(BaseSchema):
+    nome_completo: str
+    email: Optional[EmailStr] = None
+    telefone: str
+    is_active: bool = True
+class UserCreate(UserBase):
+    senha: str = Field(..., min_length=6)
+class UserResponse(UserBase):
+    id: int
 class EnderecoBase(BaseSchema):
     rua: str
     numero: str
     bairro: str
     cidade: str
-    estado: str = Field(..., description="Apenas SP é permitido")
+    estado: str
     cep: str
     complemento: Optional[str] = None
     referencia: Optional[str] = None
-
+    
     @field_validator("estado")
     @classmethod
-    def validar_estado(cls, v):
-        if v.upper() != "SP":
-            raise ValueError("Apenas endereços do estado de São Paulo (SP) são permitidos.")
-        return v.upper()
-
+    def validar_estado(cls, v): return v.upper()
+    
     @field_validator("cep")
     @classmethod
-    def validar_cep(cls, v):
-        if not re.match(r"^\d{5}-?\d{3}$", v):
-            raise ValueError("CEP inválido! Use o formato 00000-000.")
-        v = v.replace("-", "")
-        return f"{v[:5]}-{v[5:]}"
-
-class EnderecoCreate(EnderecoBase):
-    pass
-
+    def validar_cep(cls, v): return f"{v.replace('-', '')[:5]}-{v.replace('-', '')[5:]}" if re.match(r"^\d{5}-?\d{3}$", v) else v
+class EnderecoCreate(EnderecoBase): pass
 class EnderecoResponse(EnderecoBase):
     id: int
-    user_id: int # <-- CORRIGIDO para int (para bater com o modelo Usuario)
+    user_id: int 
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-
-# ====================================================================
-# SCHEMAS DE ITEM (CARDÁPIO)
-# ====================================================================
-
 class ItemBase(BaseSchema):
-    """Campos que o admin vai preencher para CRIAR um item"""
     nome: str
-    preco: float = Field(..., gt=0) 
+    preco: float
     descricao: Optional[str] = None
     categoria: Optional[str] = None
     imagem_url: Optional[str] = None
     ativo: bool = True
-
-class ItemCreate(ItemBase):
-    """Schema usado pela rota de criação (é o que entra)"""
-    pass
-
-class ItemResponse(BaseSchema):
-    """Schema de resposta (o que sai) - ATUALIZADO"""
+class ItemCreate(ItemBase): pass
+class ItemResponse(ItemBase):
     id: int
+    restaurant_id: str
+    criado_em: datetime
+class CartItem(BaseModel):
+    item_id: int
+    quantidade: int
+class OrderStatusUpdate(BaseModel):
+    status: OrderStatus 
+class SacolaItemBase(BaseSchema):
+    item_id: int
+    quantidade: int
     restaurant_id: str
     nome: str
     preco: float
-    descricao: Optional[str]
-    categoria: Optional[str]
-    imagem_url: Optional[str] 
-    ativo: bool
-    criado_em: datetime
+    observacao: Optional[str] = None
+class SacolaItemCreate(SacolaItemBase): pass
+class SacolaItemResponse(SacolaItemBase):
+    id: int 
+    user_id: str 
+class SacolaResponse(BaseSchema):
+    id: int
+    user_id: int
+    total_price: float
+    status: str
+    items: List[SacolaItemResponse]
 
-# ====================================================================
-# SCHEMAS DE PEDIDO (ORDER)
-# ====================================================================
+# -------------------------------------------------------------------
+# --- SCHEMAS DE PEDIDO (CHECKOUT - CORRIGIDO) ---
+# -------------------------------------------------------------------
 
 class PedidoItemResponse(BaseSchema):
-    """Mostra um item que FOI comprado dentro de um pedido"""
     id: int
     item_id: int
     quantidade: int
     preco_unitario_pago: float
-
-class OrderResponse(BaseSchema):
-    """Resposta completa de um Pedido (mostra os itens dentro)"""
-    id: int
-    user_id: int 
-    restaurant_id: str 
-    status: OrderStatus
-    total_price: float
-    criado_em: datetime
-    itens: List[PedidoItemResponse] = []
-
-class CartItem(BaseModel):
-    """Item individual do carrinho enviado pelo front-end"""
-    item_id: int
-    quantidade: int
 
 class PedidoCreate(BaseModel):
     """O que o front-end envia para criar um pedido"""
     restaurante_id: str 
     endereco_id: int
     itens_do_carrinho: List[CartItem]
-
-class OrderStatusUpdate(BaseModel):
-    """Modelo para o admin atualizar o status"""
-    status: OrderStatus 
-
-
-# ====================================================================
-# SCHEMAS DA SACOLA (CARRINHO) - (O QUE FALTAVA)
-# ====================================================================
-
-class SacolaItemBase(BaseSchema):
-    """O que o frontend (consulta_restaurante) envia para a sacola."""
-    item_id: int
-    quantidade: int
-    restaurant_id: str # O google_place_id
     
-    # --- A CORREÇÃO ESTÁ AQUI ---
-    # Adicionamos os campos que o frontend está enviando
-    nome: str
-    preco: float
+    # 💳 CAMPOS DE PAGAMENTO (CORRIGIDOS)
+    codigo_pagamento: str = Field(..., description="Código do método (PIX, CARTAO, DINHEIRO).")
+    card_token: Optional[str] = Field(None, description="Token seguro do cartão salvo, se aplicável.")
+    
+    # 📝 CAMPO DE OBSERVAÇÕES
+    observacoes: Optional[str] = Field(None, description="Observações gerais sobre o pedido.")
+    
+    # Campos de entrega
+    tipo_entrega: TipoEntrega = TipoEntrega.NORMAL
+    horario_entrega: Optional[str] = None
 
-class SacolaItemCreate(SacolaItemBase):
-    """O 'molde' que a rota POST /sacola/{user_id} vai usar."""
-    pass
 
-class SacolaItemResponse(SacolaItemBase):
-    """Como um item da sacola será retornado pela API."""
-    # (É igual ao Base, mas podemos adicionar 'id' se o JSON salvar IDs)
+class ValidacaoEntrega(BaseModel):
+    codigo: str
+
+
+class OrderResponse(BaseSchema):
+    """Resposta completa de um Pedido"""
+    id: int
+    user_id: int 
+    restaurant_id: str 
+    status: OrderStatus
+    total_price: float
+    criado_em: datetime
+    
+
+    tipo_entrega: TipoEntrega
+    horario_entrega: Optional[str]
+    
+    codigo_entrega: Optional[str]
+
+    itens: List[PedidoItemResponse] = []
+
+# -------------------------------------------------------------------
+# --- SCHEMAS DE AVALIAÇÃO ---
+# -------------------------------------------------------------------
+
+class AvaliacaoCreate(BaseModel):
+    pedido_id: int
+    nota: int
+    comentario: Optional[str] = None
+
+class AvaliacaoResponse(BaseSchema):
+    id: int
+    pedido_id: int
+    nota: int
+    comentario: Optional[str]
+    criado_em: datetime
+    
     class Config:
         from_attributes = True
 
-class SacolaResponse(BaseSchema):
-    """Como a sacola inteira será retornada pela API."""
-    id: int
-    user_id: int
-    total_price: float
-    status: str
+
+# -------------------------------------------------------------------
+# --- SCHEMAS DE TELA DE HISTORICO ---
+# -------------------------------------------------------------------
+        
+class OrderHistoryResponse(BaseSchema):
     
-    # A API vai ler o JSON string e o Pydantic vai converter
-    # em uma lista de SacolaItemResponse
-    items: List[SacolaItemResponse] 
+    id: int
+    restaurante_nome: str  
+    status: OrderStatus
+    total_price: float
+    criado_em: datetime
 
     class Config:
         from_attributes = True

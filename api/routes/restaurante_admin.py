@@ -1,16 +1,63 @@
+import os
+import requests
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.encoders import jsonable_encoder 
 from sqlalchemy.orm import Session
 from typing import List 
 from datetime import datetime
 
-# --- IMPORTAÇÕES CORRIGIDAS ---
+# --- IMPORTAÇÕES ---
 from src.database import get_db
 from api.connection_manager import manager
 from src import schemas 
 
-# 1. Importar os MODELOS do lugar certo (src/models)
 from src.models.pedidos import OrderModel, OrderStatus
 from src.models.items import Item as ItemModel
+from src.models.usuario import Usuario # Importar Usuário para pegar o e-mail
+
+# --- CONFIGURAÇÃO DO SERVIÇO DE E-MAIL (Reutilizado) ---
+EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "http://localhost:3001/api/nf/enviar")
+
+async def enviar_email_status(destinatario: str, order_id: int, novo_status: str):
+    """
+    Envia um e-mail de notificação de mudança de status.
+    Reutiliza o endpoint /nf/enviar do Node.js, mas mudamos o assunto e corpo.
+    """
+    if not EMAIL_SERVICE_URL or not destinatario or 'placeholder' in destinatario:
+        return
+
+    # Mensagens personalizadas por status
+    mensagens = {
+        "CONFIRMADO": "Seu pedido foi confirmado pelo restaurante e logo começará a ser preparado!",
+        "EM_PREPARO": "Seu pedido está sendo preparado com todo cuidado.",
+        "SAIU_PARA_ENTREGA": "Oba! Seu pedido saiu para entrega. Fique atento à campainha!",
+        "CONCLUIDO": "Pedido entregue. Bom apetite e obrigado pela preferência!",
+        "CANCELADO": "Infelizmente seu pedido foi cancelado. Entre em contato com o restaurante para mais detalhes."
+    }
+    
+    msg_corpo = mensagens.get(novo_status, f"O status do seu pedido mudou para: {novo_status}")
+
+    payload = {
+        "to": destinatario,
+        "orderId": order_id,
+        "subject": f"Atualização do Pedido #{order_id}: {novo_status}",
+        "bodyText": f"Olá! \n\n{msg_corpo}\n\nAcompanhe em tempo real no app.",
+        # Não mandamos PDF de nota fiscal aqui, então mandamos null ou string vazia se a API Node exigir
+        "pdfBase64": "", 
+        "pdfPath": "" 
+        # Nota: Se sua API Node valida obrigatoriedade de PDF, você teria que ajustar lá 
+        # ou mandar um PDF "dummy" aqui. Vou assumir que podemos adaptar ou mandar vazio.
+    }
+
+    try:
+        # Se a API Node.js exigir PDF obrigatório, podemos precisar ajustar o 'schema' no Node.js
+        # para tornar o PDF opcional em notificações simples.
+        # Por enquanto, vamos tentar enviar assim.
+        await asyncio.to_thread(requests.post, EMAIL_SERVICE_URL, json=payload, timeout=5)
+        print(f"E-mail de status {novo_status} enviado para {destinatario}")
+    except Exception as e:
+        print(f"Erro ao enviar e-mail de status: {e}")
 
 # ===================================================================
 # ROTEADOR 1: ADMIN DE PEDIDOS
@@ -31,8 +78,11 @@ async def update_order_status(
     Endpoint para o restaurante atualizar o status de um pedido.
     """
     from sqlalchemy.orm import joinedload
+    
+    # Busca o pedido E o usuário dono do pedido (para pegar o e-mail)
     db_order = db.query(OrderModel).options(
-        joinedload(OrderModel.itens)
+        joinedload(OrderModel.itens),
+        joinedload(OrderModel.usuario) # <--- Carrega o usuário junto
     ).filter(OrderModel.id == order_id).first()
     
     if not db_order:
@@ -41,20 +91,36 @@ async def update_order_status(
             detail="Pedido não encontrado"
         )
         
-    db_order.status = update_data.status
+    # Atualiza o status no banco
+    novo_status = update_data.status
+    db_order.status = novo_status
     
     try:
         db.commit()
         db.refresh(db_order)
     except Exception as e:
         db.rollback()
+        print(f"Erro ao atualizar status no DB: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Não foi possível atualizar o status do pedido."
         )
     
-    response_data = schemas.OrderResponse.from_attributes(db_order).model_dump()
-    await manager.broadcast_to_order(order_id, response_data)
+    # --- 1. ENVIO DO WEBSOCKET ---
+    try:
+        order_dict = jsonable_encoder(db_order)
+        await manager.broadcast_to_order(order_id, order_dict)
+    except Exception as e:
+        print(f"ALERTA: Falha ao enviar notificação WebSocket: {e}")
+        
+    # --- 2. ENVIO DE E-MAIL (NOVO) ---
+    if db_order.usuario and db_order.usuario.email:
+        # Dispara em background para não travar a resposta
+        asyncio.create_task(enviar_email_status(
+            destinatario=db_order.usuario.email,
+            order_id=order_id,
+            novo_status=novo_status
+        ))
     
     return db_order
 

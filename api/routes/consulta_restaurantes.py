@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from sqlalchemy.orm import Session
 from src.database import get_db
 from src.models.endereco import Endereco
-from src import schemas # <-- Para usar o EnderecoResponse
+from src import schemas 
 
 # --- Variáveis de Ambiente (Google API Key) ---
 GOOGLE_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
@@ -27,12 +27,12 @@ async def get_user_location(
     
     try:
         # Busca o endereço pelo user_id
-        # NOTE: Usamos int(user_id) na rota abaixo, por isso o filtro é seguro.
         address = db.query(Endereco).filter(
             Endereco.user_id == user_id 
         ).first()
 
         if not address or not address.latitude or not address.longitude:
+             # Se não achar endereço ou coordenadas, lança erro 404 específico
              raise HTTPException(
                 status_code=404,
                 detail="Localização do usuário não encontrada. Cadastre um endereço primeiro."
@@ -40,6 +40,8 @@ async def get_user_location(
             
         return {"lat": address.latitude, "lng": address.longitude}
 
+    except HTTPException:
+        raise # Re-levanta exceções HTTP já tratadas
     except Exception as e:
         print(f"Erro ao consultar o PostgreSQL: {e}")
         raise HTTPException(
@@ -49,6 +51,8 @@ async def get_user_location(
 
 
 # --- ROTA PRINCIPAL: CONSULTA RESTAURANTES PRÓXIMOS ---
+# Esta é a rota que estava dando 404. Ela deve estar acessível em:
+# /api/restaurantes/nearby/{user_id}
 @router.get("/nearby/{user_id}", response_model=List[Dict[str, Any]])
 async def consulta_restaurantes_proximos(
     user_id: str,
@@ -70,7 +74,8 @@ async def consulta_restaurantes_proximos(
 
     # --- Passo 2: Lógica da Google Places API ---
     if not GOOGLE_API_KEY:
-        raise HTTPException(status_code=500, detail="Chave da Google Places API não configurada.")
+        print("ERRO: GOOGLE_PLACES_API_KEY não encontrada no .env")
+        raise HTTPException(status_code=500, detail="Configuração de API inválida no servidor.")
     
     url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
     keyword = search if search else 'comida'
@@ -84,30 +89,47 @@ async def consulta_restaurantes_proximos(
     }
     
     try:
-        # Usa asyncio.to_thread para rodar a chamada síncrona de requests
+        # Usa asyncio.to_thread para rodar a chamada síncrona de requests sem bloquear o servidor
         response = await asyncio.to_thread(requests.get, url, params=params)
         response.raise_for_status()
         data = response.json()
         
-        if data['status'] == 'OK' or data['status'] == 'ZERO_RESULTS':
+        if data.get('status') in ['OK', 'ZERO_RESULTS']:
             return data.get('results', [])
         else:
             print(f"Erro do Google Places: {data.get('status')} - {data.get('error_message', '')}")
-            raise HTTPException(status_code=400, detail=f"Erro na consulta à API do Google: {data.get('status')}")
+            # Se a chave do Google for inválida ou houver erro de cota, retorna 503 ou 400
+            raise HTTPException(status_code=503, detail=f"Erro externo na busca de restaurantes: {data.get('status')}")
             
     except requests.exceptions.RequestException as e:
-        # Isto é o que geralmente causa o 503
-        raise HTTPException(status_code=503, detail="Serviço de consulta de restaurantes (Google Places) indisponível.")
+        print(f"Erro de conexão com Google: {e}")
+        raise HTTPException(status_code=503, detail="Serviço de busca de restaurantes indisponível temporariamente.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ocorreu um erro inesperado no backend: {e}")
+        print(f"Erro inesperado: {e}")
+        raise HTTPException(status_code=500, detail="Erro interno no servidor.")
 
 
-# --- ROTA DE CONSULTA DE ENDEREÇO (A ROTA QUE O CHECKOUT CHAMA) ---
-@router.get("/endereco/{user_id}", response_model=schemas.EnderecoResponse)
+# --- ROTA DE CONSULTA DE ENDEREÇO ---
+@router.get("/endereco/{user_id}")
 def consultar_endereco_do_usuario(user_id: int, db: Session = Depends(get_db)):
-    """ Consulta o endereço de um usuário (exemplo). """
+    """ Consulta o endereço de um usuário para preencher o checkout. """
     
     endereco_db = db.query(Endereco).filter(Endereco.user_id == user_id).first()
     if not endereco_db:
         raise HTTPException(status_code=404, detail="Endereço não cadastrado.")
-    return endereco_db
+    
+    # Retorna um dict manual para garantir que o ID seja enviado
+    return {
+        "id": endereco_db.id,
+        "user_id": endereco_db.user_id,
+        "rua": endereco_db.rua,
+        "numero": endereco_db.numero,
+        "bairro": endereco_db.bairro,
+        "cidade": endereco_db.cidade,
+        "estado": endereco_db.estado,
+        "cep": endereco_db.cep,
+        "complemento": endereco_db.complemento,
+        "referencia": endereco_db.referencia,
+        "latitude": endereco_db.latitude,
+        "longitude": endereco_db.longitude
+    }
